@@ -6,12 +6,28 @@ import dotenv from "dotenv";
 import cors from "cors";
 import axios from "axios";
 import cookieParser from "cookie-parser";
+import session from "cookie-session";
+import passport from "./auth/passport"
+import authRoutes from "./auth/routes";
 
 // Load environment variables
 dotenv.config();
 
 const app = express();
-const PORT = 5000;
+const PORT = process.env.PORT;
+
+app.use(
+  session({
+    name: "session",
+    keys: [process.env.SESSION_SECRET || "supersecretsecretkey"],
+    maxAge: 3 * 24 * 60 * 60 * 1000, // 3 days
+  })
+);
+
+app.use(passport.initialize());
+app.use(passport.session());
+
+app.use("/auth", authRoutes);
 
 // Configure middleware
 app.use(express.json());
