@@ -15,7 +15,7 @@ router.get(
   "/google/callback",
   passport.authenticate("google", { failureRedirect: "/" }),
   (req, res) => {
-    res.redirect("/dashboard"); // redirect after successful login
+    res.redirect("http://localhost:3000/main"); // redirect after successful login
   }
 );
 

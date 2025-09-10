@@ -6,8 +6,8 @@ import dotenv from "dotenv";
 import cors from "cors";
 import axios from "axios";
 import cookieParser from "cookie-parser";
-import session from "cookie-session";
-import passport from "./auth/passport"
+import session from "express-session"; // switched from cookie-session to express-session to support regenerate/save
+import passport from "./auth/passport";
 import authRoutes from "./auth/routes";
 
 // Load environment variables
@@ -18,9 +18,14 @@ const PORT = process.env.PORT;
 
 app.use(
   session({
-    name: "session",
-    keys: [process.env.SESSION_SECRET || "supersecretsecretkey"],
-    maxAge: 3 * 24 * 60 * 60 * 1000, // 3 days
+    secret: process.env.SESSION_SECRET || "supersecretsecretkey",
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      maxAge: 3 * 24 * 60 * 60 * 1000, // 3 days
+      sameSite: "lax",
+      secure: false, // set true if behind HTTPS/proxy
+    },
   })
 );
 
@@ -43,8 +48,8 @@ app.use(cookieParser());
 // Spotify API configuration
 const CLIENT_ID = process.env.SPOTIFY_CLIENT_ID || "YOUR_CLIENT_ID";
 const CLIENT_SECRET = process.env.SPOTIFY_CLIENT_SECRET || "YOUR_CLIENT_SECRET";
-// const REDIRECT_URI = process.env.REDIRECT_URI || "http://localhost:5000/spotify-callback";
-const REDIRECT_URI = "http://localhost:5000/spotify-callback";
+// const REDIRECT_URI = process.env.REDIRECT_URI || "http://localhost:5555/spotify-callback";
+const REDIRECT_URI = "http://localhost:5555/spotify-callback";
 const SPOTIFY_SCOPES = [
   "user-read-private",
   "user-read-email",
@@ -527,4 +532,101 @@ app.get("/", (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`Server running at http://localhost:${PORT}`);
+});
+
+app.post("/tracks/:trackId", async (req: Request, res: Response) => {
+  const { trackId } = req.params;
+
+  if (!trackId) {
+    return res.status(400).json({ error: "trackId parameter is required" });
+  }
+
+  // Acquire application-level Spotify token
+  const token = await getAccessToken();
+  if (!token) {
+    return res.status(500).json({ error: "Failed to acquire Spotify access token" });
+  }
+
+  try {
+    // Fetch track from Spotify
+    const spotifyResp = await axios.get(`https://api.spotify.com/v1/tracks/${encodeURIComponent(trackId)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+      timeout: 10000,
+    });
+
+    const track = spotifyResp.data;
+    const albumImages = track.album?.images || [];
+    const media = ensureMediaThree(albumImages);
+    const artists = Array.isArray(track.artists) ? track.artists.map((a: any) => ({ name: a.name })) : [];
+
+    const title = track.name || "";
+    const length = track.duration_ms || 0;
+    const explicit = !!track.explicit;
+    const url = `https://open.spotify.com/track/${track.id || trackId}`;
+    const popularity = track.popularity || 0;
+    const trackRef = db.collection("tracks").doc(trackId);
+
+    const result = await db.runTransaction(async (transaction) => {
+      const trackDoc = await transaction.get(trackRef);
+
+      if (trackDoc.exists) {
+        transaction.update(trackRef, { updatedAt: Timestamp.now() });
+        return { alreadyExists: true, trackId: trackRef.id };
+      } else {
+        const now = Timestamp.now();
+        transaction.set(trackRef, {
+          title,
+          length,
+          playing: false,
+          played: false,
+          explicit,
+          url,
+          popularity,
+          upvotes: 0,
+          media,
+          artists,
+          createdAt: now,
+          updatedAt: now,
+        });
+
+        // if (Array.isArray(media)) {
+        //   media.forEach((m: any, index: number) => {
+        //     transaction.set(trackRef.collection("media").doc(`media_${index}`), {
+        //       height: m.height,
+        //       width: (m as any).width || 0,
+        //       url: m.url,
+        //     });
+        //   });
+        // }
+
+        // if (Array.isArray(artists)) {
+        //   artists.forEach((a: any, index: number) => {
+        //     transaction.set(trackRef.collection("artists").doc(`artist_${index}`), {
+        //       name: a.name,
+        //     });
+        //   });
+        // }
+
+        return { alreadyExists: false, trackId: trackRef.id };
+      }
+    });
+
+    return res.json({
+      success: true,
+      ...result,
+      message: result.alreadyExists
+        ? "Track already exists, updated timestamp"
+        : "Track added successfully (data fetched from Spotify)",
+    });
+  } catch (err: any) {
+    // Spotify 404 or other Spotify errors
+    if (err.response) {
+      console.error("Spotify API error:", err.response.status, err.response.data);
+      const status = err.response.status === 404 ? 404 : 502;
+      return res.status(status).json({ error: err.response.data || "Spotify API error" });
+    }
+
+    console.error("Error adding track from Spotify:", err.message || err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
 });

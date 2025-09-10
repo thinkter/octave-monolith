@@ -1,6 +1,8 @@
 // auth/passport.ts
 import passport from "passport";
 import { Strategy as GoogleStrategy, Profile } from "passport-google-oauth20";
+import dotenv from "dotenv";
+dotenv.config();
 
 passport.use(
   new GoogleStrategy(
